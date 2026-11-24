@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TinyMCE asset library plugin demo</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 960px; margin: 32px auto; padding: 0 16px; color: #1f2933; }
+        dialog { border: none; border-radius: 12px; padding: 0; width: min(720px, 92vw); box-shadow: 0 20px 60px rgba(0, 0, 0, .3); }
+        dialog::backdrop { background: rgba(15, 23, 42, .5); }
+        .picker-head, .picker-foot { display: flex; gap: 12px; align-items: center; padding: 16px 20px; }
+        .picker-head input[type=search] { flex: 1; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; }
+        .picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; padding: 0 20px; max-height: 50vh; overflow: auto; }
+        .tile { border: 3px solid transparent; border-radius: 8px; padding: 0; background: #f1f5f9; cursor: pointer; text-align: left; }
+        .tile[aria-pressed=true] { border-color: #4e9a69; }
+        .tile img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px 5px 0 0; }
+        .tile span { display: block; font-size: 12px; padding: 4px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .picker-foot { justify-content: flex-end; }
+        button.primary { background: #4e9a69; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
+        button.primary:disabled { opacity: .4; cursor: default; }
+        button.text { background: none; border: none; font: inherit; cursor: pointer; padding: 8px 12px; }
+        label.upload { border: 1px solid #4e9a69; color: #4e9a69; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Asset library plugin for TinyMCE 6</h1>
+    <p>
+        Try the image button in the toolbar ("Insert image from assets"), the browse button in Insert &rarr; Image,
+        or paste or drop an image into the editor. The "library" here lives in memory; in your app the picker and the
+        upload talk to your backend.
+    </p>
+
+    <textarea id="editor"><p>Write something, then add an image.</p></textarea>
+
+    <!-- A minimal asset picker. In a real app this is your own component (see ../vue). -->
+    <dialog id="picker">
+        <div class="picker-head">
+            <input type="search" id="picker-search" placeholder="Search images" aria-label="Search images">
+            <label class="upload">Upload<input type="file" id="picker-upload" accept="image/*" hidden></label>
+        </div>
+        <div class="picker-grid" id="picker-grid"></div>
+        <div class="picker-foot">
+            <button class="text" id="picker-cancel" type="button">Cancel</button>
+            <button class="primary" id="picker-insert" type="button" disabled>Insert</button>
+        </div>
+    </dialog>
+
+    <script src="https://cdn.jsdelivr.net/npm/tinymce@6.8.5/tinymce.min.js" referrerpolicy="origin"></script>
+    <script type="module">
+        import { registerAssetsPlugin, PLUGIN_ENTRY } from "../../src/assetsPlugin.js";
+
+        // --- A stand-in asset library: coloured SVG tiles, plus anything uploaded in this session ---
+        const tile = (name, colour) => ({
+            name,
+            altText: `${name} (sample image)`,
+            url: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+                `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="100%" height="100%" fill="${colour}"/>`
+                + `<text x="50%" y="50%" font-family="sans-serif" font-size="32" fill="#fff" text-anchor="middle">${name}</text></svg>`),
+        });
+        const library = [tile("Sunrise", "#f59e0b"), tile("Forest", "#4e9a69"), tile("Ocean", "#2563eb"), tile("Dusk", "#7c3aed")];
+
+        const uploadToLibrary = async (blob, fileName) => {
+            // A real upload POSTs the file to your server and returns the stored asset with its public URL
+            const asset = { name: fileName, altText: "", url: URL.createObjectURL(blob) };
+            library.unshift(asset);
+            return asset;
+        };
+
+        // --- The picker: open it, resolve with the chosen asset or null ---
+        const dialog = document.getElementById("picker");
+        const grid = document.getElementById("picker-grid");
+        const search = document.getElementById("picker-search");
+        const insertButton = document.getElementById("picker-insert");
+        let selected = null;
+        let resolvePick = null;
+
+        const render = () => {
+            const query = search.value.trim().toLowerCase();
+            grid.replaceChildren(...library.filter((a) => a.name.toLowerCase().includes(query)).map((asset) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "tile";
+                button.setAttribute("aria-pressed", String(asset === selected));
+                button.innerHTML = `<img alt=""><span></span>`;
+                button.querySelector("img").src = asset.url;
+                button.querySelector("span").textContent = asset.name;
+                button.addEventListener("click", () => { selected = asset; insertButton.disabled = false; render(); });
+                button.addEventListener("dblclick", () => finish(asset));
+                return button;
+            }));
+        };
+
+        const finish = (asset) => {
+            const resolve = resolvePick;
+            resolvePick = null;
+            dialog.close();
+            if (resolve) resolve(asset);
+        };
+
+        const pickAsset = () => new Promise((resolve) => {
+            resolvePick = resolve;
+            selected = null;
+            insertButton.disabled = true;
+            search.value = "";
+            render();
+            dialog.showModal();
+        });
+
+        search.addEventListener("input", render);
+        insertButton.addEventListener("click", () => finish(selected));
+        document.getElementById("picker-cancel").addEventListener("click", () => finish(null));
+        dialog.addEventListener("cancel", () => finish(null)); // Escape
+        document.getElementById("picker-upload").addEventListener("change", async (event) => {
+            const file = event.target.files[0];
+            event.target.value = "";
+            if (!file) return;
+            selected = await uploadToLibrary(file, file.name);
+            insertButton.disabled = false;
+            render();
+        });
+
+        // --- The editor ---
+        registerAssetsPlugin(window.tinymce);
+        window.tinymce.init({
+            selector: "#editor",
+            height: 420,
+            promotion: false,
+            plugins: `image link lists ${PLUGIN_ENTRY}`,
+            toolbar: "undo redo | bold italic | bullist numlist | pwassets link",
+            menu: { insert: { title: "Insert", items: "pwassets image link" } },
+            paste_data_images: true,
+            automatic_uploads: true,
+            image_uploadtab: false,
+            pwassets_pick: pickAsset,
+            pwassets_upload: uploadToLibrary,
+        });
+    </script>
+</body>
+</html>
